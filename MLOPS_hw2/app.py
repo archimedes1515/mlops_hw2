@@ -2,11 +2,9 @@ from flask import Flask, abort, jsonify
 from flask_restx import Api, Resource, fields
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.exceptions import NotFittedError
 import pickle
-import os
-import json
 from flask_sqlalchemy import SQLAlchemy
-
 
 
 model_dict = {
@@ -28,19 +26,19 @@ hyperparams_dict = {
 app = Flask(__name__)
 api = Api(app, title='my ML API')  # оборачиваем app для документации swagger
 
-app.config["SECRET_KEY"] = "pogchampsecret"
-app.config[
-    "SQLALCHEMY_DATABASE_URI"
-] = "postgresql://postgres:123@postgres:5432/homework2"
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+if __name__ == '__main__':
+    app.config["SECRET_KEY"] = "pogchampsecret"
+    app.config[
+        "SQLALCHEMY_DATABASE_URI"
+    ] = "postgresql://postgres:123@postgres:5432/homework2"
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
-class Model_table(db.Model):
+
+class ModelTable(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    # model = db.Column(db.String())
     model = db.Column(db.LargeBinary, nullable=False)
-    #model_class = db.Column(db.String())
-    #model_hyper = db.Column(db.String())
+
 
 db.create_all()
 
@@ -81,10 +79,6 @@ model_id_test = api.model('Model id and Test Data',
                            }
                           )  # для получения id модели и тестовых данных
 
-pkl_path = os.path.join(os.getcwd(), 'models_pkl')
-if not os.path.exists(pkl_path):
-    os.makedirs(pkl_path)
-
 
 @api.route('/models')
 class Models(Resource):
@@ -105,22 +99,9 @@ class ClassifierModels(Resource):
         400: 'Error',
         404: 'Model doesn\'t exist'
     }, params={'model_name': 'Name of the model'})
-    def get(self, model_name):
+    def get(self):
         """Отображение моделей."""
         return 'logreg and RandomForest'
-        '''
-        if model_name in model_dict:
-            print_d = {}
-            pkl_lst = [s for s in os.listdir(pkl_path) if model_name in s]
-            for f_name in pkl_lst:
-                with open(os.path.join(pkl_path, f_name), "rb") as f:
-                    model = pickle.load(f)  # будем модели хранить в pickle
-                    f_key = int(f_name[:-4].split('_')[1])  # получим id модели
-                    print_d[f_key] = str(model)
-            return jsonify(models=print_d)
-        else:
-            abort(404, 'No such model')
-        '''
 
     @api.expect(data_hyperparams)
     def post(self, model_name):
@@ -145,7 +126,7 @@ class ClassifierModels(Resource):
             model_dict[model_name] = LogisticRegression()
         elif model_name == 'RandomForest':
             model_dict[model_name] = RandomForestClassifier()
-        new_record = Model_table(model=pickle.dumps(new_model)) #, model_class=model_name, model_hyper=json.dumps(hyperparams))
+        new_record = ModelTable(model=pickle.dumps(new_model))
         db.session.add(new_record)
         db.session.commit()
         return f'{new_model} fit on data. id: {new_record.id}. Train score: {score}'
@@ -157,7 +138,7 @@ class ClassifierModels(Resource):
             model_id = api.payload['model_id']['id']  # считаем id модели
             train = api.payload['train']
             target = api.payload['target']
-            my_query = Model_table.query.get(model_id)
+            my_query = ModelTable.query.get(model_id)
             if my_query is None:
                 abort(404, f'Model {model_name} with id {model_id} not found')
             else:
@@ -177,11 +158,11 @@ class ClassifierModels(Resource):
         """Удаление модели."""
         if model_name in model_dict:
             model_id = api.payload['model_id']['id']
-            effected_rows = Model_table.query.filter(Model_table.id == model_id).delete()
+            effected_rows = ModelTable.query.filter(ModelTable.id == model_id).delete()
             if effected_rows == 0:
-               abort(404, f'Model {model_name} with id {model_id} not found')
+                abort(404, f'Model {model_name} with id {model_id} not found')
             else:
-               db.session.commit()
+                db.session.commit()
         else:
             abort(404, 'No such model')
         return f'Dumped model {model_name} with id {model_id}'
@@ -196,15 +177,16 @@ class Predict(Resource):
         """Предсказания с помощью выбранной модели."""
         if model_name in model_dict:
             model_id = api.payload['model_id']['id']
-            my_query = Model_table.query.get(model_id)
+            my_query = ModelTable.query.get(model_id)
             if my_query is not None:
                 model = pickle.loads(my_query.model)
                 try:
                     test = api.payload['test']
                     predict = model.predict(test)
                     return {'predicts': list(map(int, predict))}
-                except ValueError as err:
-                        abort(400, f'Failed to predict. Check data. {err}')
+                except (NotFittedError, ValueError) as err:
+                    return 404
+                    # abort(400, f'Failed to predict. Check data. {err}')
             else:
                 abort(404, f'Model {model_name} with id {model_id} not found')
         else:
